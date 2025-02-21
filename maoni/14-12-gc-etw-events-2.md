@@ -10,7 +10,7 @@ Unless you have done some other analysis that gives you a good reason to start f
 Normally when someone wants to look at managed memory, he does so due to one or both of the following reasons:
 
 1) pause time issue (eg, he probably noticed that his process is running slow and has looked at perf counters and noticed % time in GC is high; 
-or his request is timing out because it’s not processed in a sufficient amount of time);
+   or his request is timing out because it’s not processed in a sufficient amount of time);
 
 2) memory issue (eg, he probably noticed that his process’s private bytes perf counter shows a high value);
 
@@ -92,3 +92,65 @@ That’s all for today and we will continue next time.
 Edited on 03/01/2020 to add the indices to GC ETW Event blog entries
 
 https://devblogs.microsoft.com/dotnet/gc-etw-events-2/
+
+
+
+在继续上一篇博客的内容之前，我想分享一个关于托管内存分析的性能优化建议。有些已经尝试过PerfView的朋友可能已经注意到，它有一个堆快照功能（在PerfView UI中，点击Memory\Take Heap Snapshot），可以显示托管堆的快照，即堆中的类型、每种类型的实例数量以及它们之间的引用关系。除非你已经通过其他分析找到了合理的起点，否则通常不应该从这里开始（是的，即使你知道堆大小是问题所在，除非你有其他支持性证据，比如出现了内存不足（OOM）的情况，否则也不应该从这里开始）。让我解释一下原因。
+
+通常，当有人想要查看托管内存时，他这样做是因为以下一个或两个原因：
+
+1. **暂停时间问题**（例如，他可能注意到进程运行缓慢，查看了性能计数器，发现GC时间百分比很高；或者他的请求超时，因为没有在足够的时间内处理）；
+
+2. **内存问题**（例如，他可能注意到进程的私有字节性能计数器显示了一个很高的值）；
+
+在深入探讨为什么我说堆快照通常不应该是起点之前，让我们先回顾一下关于.NET垃圾回收（GC）的一些基本知识，因为这些知识对于理解后续内容至关重要。
+
+.NET GC是一个分代GC。托管堆分为3个代——gen0、gen1和gen2。Gen2是最老的代，用于存放长期存活的数据，而gen0和gen1被称为“短暂代”。最年轻的代gen0用于容纳新分配的对象（暂时不考虑大对象），而gen1则充当gen0和gen2之间的缓冲区，用于在GC时容纳正在处理的数据。
+
+这意味着我们有两种类型的GC——短暂代GC和完全GC，前者只收集短暂代，而后者收集整个堆，即gen0、gen1和gen2。因此，GC暂停时间是由这些GC贡献的，而不仅仅是完全GC。所以当你遇到暂停时间问题时，并不意味着你只需要查看完全GC——你需要查看你进行了哪些类型的GC以及它们的暂停时间是多少。这甚至不意味着对于最长的单个GC暂停，你应该总是查看完全GC，因为完全GC可以是并发的，这意味着你可能会有gen2 GC，其暂停时间比短暂代GC更短。即使完全GC确实有最长的单个暂停时间，这仍然不意味着你应该只关注它们，因为你可能很少进行这些GC，而短暂代GC实际上可能贡献了大部分的GC暂停时间，如果总GC暂停时间是你的问题的话。因此，与其假设要查看哪些GC，不如使用PerfView来收集GC ETW事件，这些事件会准确地告诉你你进行了哪些类型的GC、它们的暂停时间以及其他相关信息，对吧？😊
+
+当你查看堆快照时，你会看到堆上的所有对象（实际上并不是所有对象，但所有有代表性的对象），你可能会看到一种类型的对象占据了堆上最大的百分比，因此你可能会试图减少这种类型的对象。但这可能并不是你的问题，因为这可能只会减少完全阻塞的GC暂停，而不一定会减少其他类型的GC。还有其他可能性——可能是GC触发得太频繁（其中大部分是gen0 GC）；也可能是gen2对象确实贡献了短暂代GC的收集时间，但不是占据最大百分比的那种类型。再次强调，你应该先找出问题的根源，而不是立即尝试减少某些对象的数量。
+
+希望到现在为止，我已经说服你应该先查看GCStats，让我们更详细地看看它。
+
+第一个表格是“按代汇总的GC统计”。这张表中首先引起我们注意的是“Induced”列：
+
+
+
+大多数时候，我们期望看到这一列全是0，但在这个例子中并非如此！不仅不是0，而且在30次GC中，有23%是诱导GC！这意味着我们至少应该看看这些GC是否也占据了大部分的暂停时间。如果是这样，并且暂停时间是一个问题，那么我们应该弄清楚这些GC是如何被诱导的。在我们的例子中，我看到：
+
+垃圾回收暂停时间百分比：7.1%
+
+这意味着如果我们关心这个进程的性能，GC似乎是一个值得关注的点。所以让我们看看“所有GC事件”表，并关注那些“Trigger Reason”列显示为“Induced*”的GC。InducedNotForced意味着有人要求触发GC，而GC会决定如何执行——对于gen0和gen1 GC来说，是否强制没有区别，因为它们总是以阻塞方式执行。对于gen2 GC，GC会决定是以后台GC还是完全阻塞GC的方式执行。
+
+在我们的例子中，尽管诱导GC的暂停时间看起来并不特别长，但由于平均暂停时间并不长，这些GC确实会累积起来。因此，确实有必要更仔细地看看。所以让我们弄清楚是谁诱导了这些GC。因为这需要调用栈信息，我们需要再运行一次跟踪，重复我们刚刚运行的内容，同时运行PerfView以收集更多信息。获取调用栈的一个简单方法是使用以下命令行运行PerfView：
+
+复制
+
+perfview collect
+
+运行后，我确认我仍然看到了同样多的诱导GC。然后我在PerfView中打开了这个跟踪文件，现在我看到文件名下有更多的选项。这是因为我们有更多类型的事件，PerfView可以提供更多不同类型的分析。
+
+找出诱导GC的最简单方法是获取名为GC/Triggered的事件的调用栈，该事件在每次GC触发时都会触发。让我们点击“Events”视图，在过滤器文本框中输入“tri”，这会显示名称中包含“tri”的事件，这样我们就能轻松看到GC/Triggered事件。如果你没有这个事件，这意味着你运行的运行时版本不够新。在较旧的运行时版本中，你仍然可以为工作站GC（WDExpress进程使用的）找出这一点，但对于服务器GC来说，这并不是合适的工具（这也是我们添加GC/Triggered事件的原因）。
+
+我将使用我高亮显示的GC/Triggered事件的时间戳作为示例。
+
+
+
+如果我右键点击它，我会看到一个名为“Any stacks”的选项。点击它会显示该事件的调用栈：
+
+
+
+结果发现，WPF（Presentation Core）调用了Add/RemoveMemoryPressure。这个API的实现会触发一个非强制的GC。显然，频繁调用A/RMP可能会触发过多的GC。另一种触发非强制GC的方法是，如果有人调用了以下参数的GC.Collect API：
+
+csharp
+
+复制
+
+public static void Collect(int generation, GCCollectionMode mode, bool blocking);
+
+并将最后一个参数设置为false。
+
+今天就到这里，我们下次继续。
+
+2020年3月1日编辑，添加了GC ETW事件博客条目的索引。
