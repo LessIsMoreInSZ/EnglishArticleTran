@@ -110,4 +110,36 @@ Elapsed Time
  
 
 The orange lines are GC threads. They were created about 12 hours ago. The green lines are user threads and they were created 2 mins to 40mins ago. So naturally at the current state these user threads couldn’t’ve spent much time.
+橙色的线是GC线程。它们是12小时前创建的。绿线是用户线程，它们是在2分钟到40分钟前创建的。因此，在当前状态下，这些用户线程自然不会花费太多时间。
 
+. net CLR内存\%时间在GC计数器中，并且在执行GC的线程上失控。
+
+人们用来查看GC所花费时间的两种常用方法是：.NET CLR内存下的GC性能计数器% time；
+和cdb/windbg中！runaway debugger命令显示的CPU时间。它们到底是什么意思？GC中的%时间是这样计算的：
+
+当nthGC启动时（即，在托管线程挂起之后和GC工作开始之前），我们记录当时的时间戳。
+设它为TA(n)
+
+当第n次GC结束时（即，在GC工作完成之后，在我们恢复托管线程之前），我们记录另一个时间戳。设它为TB(n)
+
+所以GC的时间是TB(n) - TA(n)最后一次GC结束的时间是TB(n) - TB（n-1）
+所以在GC %时间(TB (n) - TA (n)) /结核病(TB (n) - (n - 1))。
+
+因为我们只记录了时间戳，所以实际上并没有忽略线程被切换出去的时间——例如，
+如果您在单进程机器上，而另一个进程具有相同优先级的线程（与执行GC的线程相同）
+它可能会占用正在执行GC的线程的一些时间。尽管如此，这是一个很好的近似。
+
+当分页发生时，它不是一个很好的近似值。
+在这种情况下，您将看到GC的% Time非常高，但实际上用于GC工作的时间很低，因为大部分时间都用于IO。
+要验证您是否遇到了这种情况，您可以查看Memory\Pages/sec，以查看它的分页量。
+
+runaway更准确，因为它确实记录了花在线程上的实际时间。
+然而，在使用！runaway查看GC所花费的时间时，我确实发现了两个常见的错误。
+
+1)将“花费在GC线程上的时间”误认为“花费在GC中的时间”。
+
+让我们以服务器GC为例。当需要GC时，GC线程首先执行挂起工作。
+显然，这需要时间。有时候，如果有很多线程，或者有些线程卡住了，需要很长时间才能挂起它们，这可能需要很长时间。
+
+2)使用当前失控的输出来判断GC花费了多少时间，而不考虑一些用户线程已经死亡。
+除了查看用户/内核模式时间，您可能还想查看运行时间。下面的输出来自我看到的一个问题：

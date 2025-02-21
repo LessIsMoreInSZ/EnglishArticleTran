@@ -2,6 +2,9 @@
 !address is a very powerful debugger command. It shows you exactly what your VM space looks like. 
 If you already got the output from the !sos.eeheap -gc command (refer to this article for usage on sos), for example:
 
+address是一个非常强大的调试命令。它会准确地显示VM空间的样子。
+如果已经得到了！sos的输出。Eeheap -gc命令（在sos上的使用请参考本文），例如：
+
 0:003> !eeheap -gc
 Number of GC Heaps: 1
 generation 0 starts at 0x01245078
@@ -19,7 +22,7 @@ Total Size   0x3bd74(245108)
 GC Heap Size   0x3bd74(245108)
 
 you can correlate the segments with the output of !address to get a better view of them. For this specific case here’s the excerpt of the output from the !address command:
-
+您可以将这些段与！address的输出关联起来，以便更好地查看它们。对于这个特定的例子，下面是！address命令输出的摘录：
 0:003> !address
 [omitted]
     01232000 : 01232000 – 0000e000
@@ -81,5 +84,9 @@ This says that the 2 segments (starting from 01240000 and 02240000) are adjacent
 the rest is still reserved memory. Before and after the 2 segments we got some free space there. 
 As I mentioned below it’s very unlikely that the managed heap is fragmenting the VM because we are good about requesting large chunks at a time and usually the OS is not bad at giving us addresses that are pretty contiguous if possible. One of the very few cases where you would see managed heap fragmenting VM is if you have temporary large object segments and GC needs to frequently acquire and release VM chunks. Those chunks could be scattered in the VM space especially considering there are other things that consume VM as well at the same time.
 
+这表示两个段（从01240000和02240000开始）彼此相邻-其中一部分已提交，
+其余的仍然是预留内存。在这两段之前和之后都有一些空闲空间。
+正如我在下面提到的，托管堆不太可能使VM分片，因为我们很擅长一次请求大块，而且通常操作系统在给我们提供可能的相当连续的地址方面并不差。
+您将看到托管堆碎片VM的极少数情况之一是，如果您有临时的大型对象段，并且GC需要频繁获取和释放VM块。这些块可以分散在VM空间中，特别是考虑到还有其他事情同时消耗VM。
 https://devblogs.microsoft.com/dotnet/correlating-the-output-of-eeheap-gc-and-address/
 

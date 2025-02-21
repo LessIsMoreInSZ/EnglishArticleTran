@@ -108,3 +108,89 @@ Some people prefer to take memory dumps when the process hangs, sometimes this d
 
 https://devblogs.microsoft.com/dotnet/my-application-seems-to-hang-what-do-i-do-part-2/
 
+
+场景一：进程CPU使用率为0，其他进程占用CPU
+上期我们讨论了这种情况，通常是由于低优先级线程被高优先级线程抢占导致的。但还有一种可能：
+
+场景二：进程CPU使用率为0，其他进程CPU使用率也很低
+这种情况极有可能是死锁导致的。调试死锁相对直接：
+
+使用Windows调试工具包中的扩展命令（如!locks）
+
+对于托管应用，SoS调试扩展提供了!SyncBlk命令查看托管锁
+
+CLR 2.0还支持!Dumpheap -thinlock检查ThinLocks
+
+另一种可能是进程正在进行IO操作（如大量页面交换），虽然CPU使用率低，但实际在等待磁盘IO。
+
+场景三：进程占用CPU但表现"挂起"
+对于不同应用，"挂起"的定义不同：
+
+UI应用：界面无响应
+
+服务器应用：请求处理停滞
+
+以服务器应用为例，假设CPU使用率高于平常但吞吐量下降，可能的原因包括：
+
+无限循环：
+
+调试相对简单：多次中断调试器，观察占用CPU的线程
+
+在多CPU环境下稍复杂，但无限循环的线程始终可被捕获
+
+偶发性挂起：
+
+需要使用CPU分析工具
+
+推荐使用Process Explorer查看活跃进程
+
+建议收集性能计数器，因其开销低且可长期记录
+
+性能计数器收集建议
+以下是我常用的计数器（[]内为注释）：
+
+处理器相关
+
+Processor% Processor Time (_Total及所有处理器)
+[了解CPU使用概况及是否存在处理器使用不均]
+
+进程/线程相关
+
+Process% Processor Time (所有进程或排除已知无问题的进程)
+
+Thread% Processor Time (所有进程或排除已知无问题的进程)
+[定位占用CPU的线程]
+
+.NET相关
+
+.NET CLR Memory (所有托管进程或排除已知无问题的进程)
+[如关注GC问题]
+
+内存相关
+
+Memory% Committed Bytes In Use
+
+Memory\Available Bytes
+
+Memory\Pages/sec
+
+Process\Private Bytes (关注的目标进程)
+[了解内存使用情况]
+
+深入分析
+根据计数器结果，可以：
+
+聚焦CPU使用高峰时段
+
+定位具体进程/线程
+
+使用采样分析器获取函数级执行信息
+
+关于内存转储
+虽然内存转储有时很有用，但在以下情况可能失效：
+
+挂起与线程调度时序相关
+
+中断进程获取转储可能改变线程行为
+
+如果确实需要转储，建议获取连续转储并使用!runaway命令查看CPU消耗线程。单一转储对调试挂起问题帮助有限，因为它只反映某一时刻的进程状态。

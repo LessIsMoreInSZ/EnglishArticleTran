@@ -29,3 +29,31 @@ which means you get the value at the time you did the SOS command (unless of cou
 it reflects a value updated at some specific point in the past).
 
 https://devblogs.microsoft.com/dotnet/difference-between-perf-data-reported-by-different-tools-1/
+
+因此，有许多性能工具，其中一些报告相同或相同类型的数据。
+我想谈谈与托管堆调查相关的各种不同之处。
+这并不是要涵盖所有内容，只是我认为人们经常使用的那些。
+
+托管堆大小
+
+我们有。net CLR内存性能计数器和SoS扩展来报告托管堆大小相关的数据。
+
+差1
+
+.NET CLR内存性能计数器报告的值受以下因素的影响
+
+1)收集它们的频率——意思是你告诉你使用的工具的频率(大多数人使用perfmon，
+在内部，我知道许多小组的测试团队收集它们作为自动化的一部分)。最频繁的时间间隔是每秒一次。
+
+2)更新的频率。大多数。net CLR内存性能计数器只在每次GC结束时更新。
+
+例如，假设您正在使用perfmon以每秒一个样本的速度收集，并且如果在过去一秒钟内发生了多个GC，
+你会错过中间值。
+
+由于这些性能计数器只是隔一段时间更新一次，所以在刷新值之前，它会保持与上次更新时相同的值。
+例如，如果您正在查看GC中的% Time，并说最后一个值为80%，并且如果10秒内没有发生GC，
+这个计数器将保持在80%，但实际上在过去的10秒内没有发生gc。
+
+另一方面，SOS数据只有在你请求时才会得到，
+这意味着您在执行SOS命令时获得该值（当然，除非命令特别告诉您）
+它反映了过去某个特定时间点更新的值)。

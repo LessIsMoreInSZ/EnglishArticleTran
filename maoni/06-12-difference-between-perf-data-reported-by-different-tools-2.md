@@ -36,3 +36,38 @@ If you are concerned with the true amount of memory that the managed heap commit
 you should use the # Total Committed Bytes counter.
 
 https://devblogs.microsoft.com/dotnet/difference-between-perf-data-reported-by-different-tools-2/
+
+托管堆大小
+
+我们有。net CLR内存性能计数器和SoS扩展来报告托管堆大小相关的数据。
+
+差2
+
+有一些。net CLR内存计数器与托管堆大小相关：
+
+#总已提交字节数
+
+#总预留字节数
+
+我在这里解释了这些计数器的含义。
+
+现在，它们与你执行SOS时看到的值有什么关系呢？eeheap gc吗?
+
+[00:03] eeheap -gc GC堆的个数：第0代从0x01245078开始，第1代从0x0124100c开始，第2代开始
+在0x01241000临时段分配上下文：（0x0125a900, 0x0125b39c）段
+开始分配大小001908c0 793fe120 7941d8a8 0x0001f788(128904) 01240000 01241000 0125b39c 0x0001a39c（107420）
+大对象堆从0x02241000段开始
+开始分配大小02240000 02241000 02243250 0x00002250（8784）总大小0x3bd74（245108）——————————GC堆大小0x3bd74（245108）
+
+分配的列表示段上最后一个活动对象的结束。所以对于gen0和LOH，它随着托管线程的分配而变化，
+不像。net CLR内存计数器，它只反映最后一次GC发生时段上最后一个活动对象的结束
+（上次GC结束时）。
+
+. net CLR内存计数器下的# Bytes in All Heaps计数器有点误导人。
+解释说它是“所有堆”中的字节数，但实际上是CLR 2.0中的gen1+gen2+LOH，
+所以它不包括gen0，因为大多数情况下，gen0的大小在GC之后是0。
+因此，如果您在调试器下闯入您的进程并使用！使用Eeheap -gc命令，您很可能会得到与此计数器相同的值。
+但是如果你在2个gc之间中断，你从！eeheap -gc得到的值将总是大于这个计数器的值。
+
+如果您关心托管堆提交的真实内存量（这通常是您需要担心的）
+你应该使用# Total Committed Bytes计数器。
