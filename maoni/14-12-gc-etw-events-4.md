@@ -65,3 +65,54 @@ See GC Performance Counters for an explanation if you need to.
 Edited on 03/01/2020 to add the indices to GC ETW Event blog entries
 
 https://devblogs.microsoft.com/dotnet/gc-etw-events-4/
+
+在上一篇博客中，我解释了GCStats中的Suspend MSec和Pause MSec列以及它们是如何计算的。在这篇博客中，我想谈谈其他几列。
+
+GenX MB、GenX Survival Rate % 和 GenX Frag %
+首先，这些数据是在GC结束时计算的。GenX MB列包括该代的碎片。GenX Survival Rate %（存活率）的计算公式是：（从该代存活下来的字节数 / 该代在回收前对象占用的字节数）。
+例如，假设某代大小为4MB，碎片为1MB，那么对象占用的字节数为3MB。如果这3MB中有1.5MB存活下来，那么存活率就是50%。如果在回收后，该代大小为2MB，碎片为0.5MB，
+那么碎片率（Frag %）就是25%。
+
+你有时会注意到GenX Survival Rate %列显示为NaN。这是因为我们没有回收该代，因此讨论该代的存活率没有意义。例如，
+如果我们正在进行gen1 GC，gen2和LOH（大对象堆）的存活率就会显示为NaN。
+
+如果你正在使用固定（pinning）操作（或者你使用的库代表你进行固定操作，例如IO），你通常会看到gen0的碎片率非常大，有时甚至达到100%（100%并不意味着gen0中只有碎片，
+这只是因为我们的计算方式是：gen0中的碎片MB / gen0的大小MB，而它们的差异足够小，以至于gen0中的碎片MB与gen0的大小MB相同）。我们尽量保留gen0中的碎片，
+因为它可以立即用于满足分配请求。
+
+后台GC（Background GC，BGC）不会进行压缩，因此在进行BGC后，你看到gen2的碎片率相当大（即>50%）并不奇怪。如果我们检测到gen2中有大量无法有效使用的碎片，
+我们会进行一次压缩的gen2 GC。
+
+除非明确要求，否则我们不会压缩LOH。因此，如果LOH的碎片率仍然很大，这意味着我们无法有效利用LOH上的大量空闲空间。如果LOH占用了堆的很大一部分，那么值得优化LOH的使用。
+
+Promoted MB（提升的MB）
+这是GC期间提升的字节数。例如，如果我们正在进行gen1 GC，这就是从gen0和gen1提升的字节数。你可以想象，由于gen0和gen1通常只占堆的一小部分，
+临时GC的提升字节数通常也比你看到的gen2 GC的提升字节数要小得多。正如我之前提到的，GC的暂停时间与GC存活的对象量成正比，
+换句话说，与Promoted MB列中显示的数据成正比（当然，后台GC是个例外，因为它专门设计为最小化暂停时间）。
+
+一个判断是否存在异常的好方法是查看GC的暂停时间与其提升的内存量的关系。如果提升的内存量很小，但暂停时间却很长，那么几乎可以肯定发生了与GC工作无关的事情。
+那么什么是“小”呢？一种方法是与其他GC进行比较。假设你所有的完整阻塞GC都提升了约1GB，并花费了1秒，但有几个GC花费了10秒，仍然提升了约1GB，
+那么你就知道在这几个异常GC期间发生了不正常的事情。要了解这些GC期间发生了什么，你可以使用以下PerfView命令行：
+
+bash
+复制
+perfview /ClrEvents=default-stack-GCHeapSurvivalAndMovement /StopOnGCOverMSec:1000 /DelayAfterTriggerSec:0 /CircularMB:2000 /CollectMultiple:3 /NoGUI /NoNGENRundown collect
+（/ClrEvents排除了会使GC时间偏差的几个因素。这个命令表示如果检测到GC时间超过1秒，就停止跟踪，并收集3个这样的跟踪。由于这不是一个通用的PerfView教程，
+我不会详细解释命令行参数 —— 有关其他命令行参数的解释，请在PerfView的Help\Command Line Help中搜索。）
+
+然后，你可以查看GCStats视图，获取那些异常长的GC的开始和结束时间，并打开CPU堆栈视图，查看这些GC的开始和结束时间戳之间的调用堆栈。这通常会指向问题的根源。
+然而，情况并非总是如此。有时你会看到CPU根本没有被大量使用（无论是GC还是其他操作），在这种情况下，你需要进行线程时间跟踪（即在上述命令行中添加/ThreadTime，
+如果CPU不是问题的话 —— 请注意，启用/ThreadTime会大幅增加事件量，此时/CircularMB:2000可能不够，你可能需要将其增加到5000甚至更多），
+并查看线程时间视图以了解发生了什么。
+
+
+偶尔，你可能会看到Suspend MSec列显示异常大的数字（同样，检测异常值很容易 —— 大多数时候你会看到该列的值小于1ms），由于此时GC尚未开始，因此这不可能是由于GC工作引起的，
+一定是其他原因。一般来说，我建议只有在它频繁发生时才去关注它。例如，如果你偶尔看到它小于30ms，我不会担心。但如果你看到它更长，并且频繁发生以至于明显影响了你的延迟，
+那么你肯定需要尝试上述命令行。在我处理的一个案例中，客户看到该列的值在数百毫秒甚至超过1秒，且发生在10%以上的GC中。
+我们最终追踪到他们机器上运行的一个组件（之前他们并不知道）不断更改线程优先级。在他们移除该组件后，问题消失了。
+
+Finalizable Surv MB 和 Pinned Obj
+这些值与“.NET CLR Memory”性能计数器中的“Promoted Finalization-Memory from Gen 0”和“# of Pinned Objects”相同。如果你需要解释，请参阅GC性能计数器的文档。
+
+2020年3月1日编辑，添加了GC ETW事件博客条目的索引。
+
