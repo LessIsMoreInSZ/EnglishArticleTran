@@ -14,4 +14,16 @@ The runtime team used to have what we called the “CLR Foundations” series wh
 
 A while ago the cafeteria at work (for the building I was in) started to implement this new “zero waste” thing which meant we no longer throw away garbage or put dirty dishes away ourselves. Instead a cafeteria employee acts as the garbage collector. So it’s like at a food court. And this garbage collector had a very aggressive collection policy. Sometime when people just finished eating and are still chatting at the table, they would already start a collection which meant each person would need to pass them their used dishes 😛 Knowing this I was very mindful with my food but one time I was still not quick enough – after I put my food for a few seconds they already started collecting. I sent the cafeteria manager an email to suggested a way to indicate “in use”. As always she’s extremely nice; and apparently already had a way to indicate this and just needed to remind some of her staff of it. She also said “I will also make sure they understand the importance of waiting before clearing a table after the initial lunch rush”. And I thought, “hey, that’s dynamic tuning right there!”.
 
-https://devblogs.microsoft.com/dotnet/garbage-collection-at-food-courts/
+https://devblogs.microsoft.com/dotnet/garbage-collection-at-food-courts/当我刚开始从事垃圾回收（GC）工作时，我的前任正在向我解释 GC 的调优过程。我告诉他，我觉得这听起来很像我当时在美食广场看到的清洁工的工作方式（那时我经常光顾美食广场 😊）。他对此表示赞同。
+
+我说的是，如果你观察一下美食广场，为了提高效率，清洁工每次出来收集餐具时会尽量收集大量的脏盘子。这意味着在忙碌的时候，他们会更频繁地收集，以免干净的盘子用完；而在不忙的时候，他们会减少收集次数，因为需要收集的盘子很少。这种方式与 GC 的调优是相同的。脏盘子就像被死亡对象占用的空间——它们曾经被使用过（即“弄脏”），但现在可以被回收。干净的盘子就像 GC 清理后提供的空间，供人们用来创建新对象，也就是分配内存。如果 GC 进行了一次回收，但没有发现太多可回收的空间，也就是说存活率很高，那么它会等到更多的清理空间被使用，或者换句话说，在进行下一次回收之前会有更多的分配发生。
+
+在用餐时间，美食广场很忙，所以干净的盘子消耗得更快，清洁工也会根据这种情况调整频率。这与 GC 调整两次回收之间的分配量是一样的。这个分配量被称为“分配预算”。而这种 GC 所做的“调整”是其动态调优的一部分。随着进程运行，GC 会根据它观察到的存活率修改这个分配预算，以保持自身的高效运作。
+
+现在，清洁工需要一种方法来识别某个盘子是否仍在使用中——如果清洁工在你还在使用盘子时就把它拿走，那将是相当不礼貌的（如果他们经常这样做，我想他们会失业……）。如果你还在吃东西，这是显而易见的。这是最常见的场景。如果说你需要暂时离开（比如突然记起要在甜品店关门之前买一块蛋糕），你可能会把外套放在椅子上，以表明你还在那里。GC 也需要知道某个对象是否仍在使用中。最常见的方法是一个对象引用了另一个对象，这对 GC 来说是显而易见的。当然，也有一些不太常见的方式需要额外的努力来告诉 GC 某个对象正在被使用，例如 GC 句柄。
+
+多年来，我一直用美食广场的比喻来向别人解释 GC 的调优过程，似乎大家都很接受这个比喻，甚至包括那些完全不在技术领域工作的人。有一次，我参加了一个关于沟通技巧的课程，每个人都被要求做一个一分钟的演讲来解释自己的工作。班上的许多人从事金融和销售行业。我用了美食广场的比喻，多年后，还有人热情地告诉我，他们通过这个比喻理解了垃圾回收器的工作原理 😄，并且至今还记得。
+
+我们的运行时团队曾经有一个叫做“CLR 基础知识”系列的活动，其中某个人会向团队其他成员解释他们所负责的领域。因此，当我在解释 GC 时，我使用了美食广场的比喻。一些同事告诉我他们非常喜欢这个比喻。当然，他们也很有创意，开始建议用美食广场的其他事物来类比。我记得有人建议可以用人们如何就座来说明压缩式收集器的工作原理，也就是说，如果人数不多，他们可能会分散坐在不同的桌子上。但如果桌子快不够用了，人们可以坐得更紧密，从而腾出空间容纳更多的人。
+
+一段时间前，我们公司食堂（在我所在的那栋楼里）开始实施一项新的“零浪费”政策，这意味着我们不再自己扔垃圾或收拾脏盘子。相反，由一名食堂员工担任“垃圾收集员”。这就像是在美食广场一样。而且这位垃圾收集员的收集策略非常激进。有时候，人们刚刚吃完饭还在聊天时，他们就已经开始收集，这意味着每个人都需要把自己的脏盘子递给他们 😛。知道这一点后，我对食物特别小心，但有一次我还是不够快——我把食物放下才几秒钟，他们就开始收集了。于是，我给食堂经理发了一封电子邮件，建议一种标记“正在使用”的方式。她一如既往地非常友善，并且显然已经有一种方法来标记这一点，只是需要提醒她的部分员工。她还说：“我也会确保他们在午餐高峰后的清桌工作中明白等待的重要性。” 我当时就想：“嘿，这就是动态调优啊！”

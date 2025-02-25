@@ -74,3 +74,67 @@ If you do specify GCNoAffinitize as true, you should make sure your clr.dll is f
 
 Note that these configs *only* affect the GC behavior – so the difference between specifying GCHeapCount as 10 on a 40-CPU machine and running the process in a job object that’s only allowed to use 10 CPUs is the former will still allow user threads to use all 40 CPUs whereas the latter will limit all threads in your process to only 10 CPUs.
 
+很久以前，我写过一篇关于在服务器应用程序中使用 Workstation GC 的文章，当时讨论的是当同一台机器上运行了多个服务器应用程序实例时的情况。默认情况下，Server GC 会将进程视为独占整台机器的资源，因此它会使用所有 CPU 来完成垃圾回收（GC）工作。然而，越来越多的人发现自己处于这样一种情况：他们可能在同一台机器上运行了几个活跃的服务器应用程序实例。当然，你可以通过将每个实例运行在容器中（Windows 上是作业对象，Linux 上是 cgroups）来限制资源。例如，如果你将作业对象限制为只能使用机器上的 40 个 CPU 中的 10 个，那么 Server GC 自然只会创建 10 个 GC 线程。
+
+为了让人们更容易在 Server GC 和 Workstation GC 之间找到一个中间地带，在 .NET 4.6.2 中，我添加了一个配置项，可以让 Server GC 使用比机器上实际拥有的 CPU 更少的核心数。针对 Windows Server 2012 R2 的更新汇总（KB4014604）描述了这个配置（显然，由于安装程序存在某些问题，该更新汇总被移除，而新的更新汇总没有包含相同的信息；我不知道为什么会这样）。无论如何，以下是从那个链接中提取的文字：
+
+修复 5
+
+在一个拥有大量处理器的系统中，你可能希望某些进程只使用部分处理器进行 Server GC。例如，如果你有一台 40 核的系统，你可能希望进程 0 只使用 10 个核，
+而进程 1 只使用 6 个核，这样进程 0 将获得 10 个 GC 堆/线程，而进程 1 获得 6 个。以下是使用这些 Server GC 配置的示例：
+
+xml
+深色版本
+<configuration>
+    <runtime>
+        <gcServer enabled="true"/>
+        <GCHeapCount enabled="6"/>
+        <GCNoAffinitize enabled="true"/>
+        <GCHeapAffinitizeMask enabled="144"/>
+    </runtime>
+</configuration>
+<GCNoAffinitize enabled="true"/> 指定不要将 Server GC 线程与特定的 CPU 绑定。
+<GCHeapCount enabled="6"/> 指定你想要 6 个堆。实际的堆数量是你指定的堆数量和你的进程允许使用的处理器数量之间的最小值。
+<GCHeapAffinitizeMask enabled="144"/> 这个数字是十进制的，所以这里是 0x90，意味着使用 2 位作为进程掩码。实际的堆数量是你指定的堆数量、
+你的进程允许使用的处理器数量以及你指定的掩码中设置的位数之间的最小值。
+默认情况下，Server GC 线程会被硬绑定到它们各自的 CPU 上（我们这样做是为了更好地利用缓存）。自从这些配置可用以来，我已经看到不少人使用它们，
+但似乎也存在一些混淆。因此，我将通过一些示例场景来尝试解释。
+
+场景 0
+你在一台 40 核的机器上有 4 个使用 Server GC 的进程，并且希望每个进程使用 10 个 CPU，同时不重叠。例如，进程 #0 使用 CPU 0 到 9，进程 #1 使用 CPU 10 到 19，
+依此类推。对于进程 #0，你应该这样指定配置：
+
+xml
+深色版本
+<gcServer enabled="true"/>
+<GCHeapCount enabled="10"/>
+<GCHeapAffinitizeMask enabled="1023"/>
+1023 是 0x3FF，意味着位 0 到 9 被设置。对于进程 #1，指定 1047552（0xFFC00），依此类推。
+
+通常情况下，你确实需要指定这个掩码；否则，GC 会简单地将 Server GC 线程绑定到前 N 个 CPU 上（显然，你可能会遇到一种情况，
+即只有一个进程使用 Server GC 并且你对其使用 CPU 0 到 N-1 没有异议，在这种情况下，你不需要指定掩码值）。
+
+你为 GCHeapCount 指定的值就是 GC 堆的数量。这意味着将创建相应数量的 Server GC 线程和 Background Server GC 线程（用于后台 GC）。
+
+场景 1
+无论出于什么原因，你只是不想将 Server GC 线程硬绑定到特定的 CPU 上。
+
+xml
+深色版本
+<gcServer enabled="true"/>
+<GCNoAffinitize enabled="true"/>
+场景 2
+无论出于什么原因，你不希望将 Server GC 线程硬绑定到特定的 CPU 上，并且希望将 GC 堆的数量限制为例如 10。
+
+xml
+深色版本
+<gcServer enabled="true"/>
+<GCHeapCount enabled="10"/>
+<GCNoAffinitize enabled="true"/>
+如果你将 GCNoAffinitize 设置为 true 并指定了一个 GCHeapAffinitizeMask 值，那么 GCHeapAffinitizeMask 将不会被使用。
+
+如果你确实将 GCNoAffinitize 设置为 true，则应确保你的 clr.dll 来自 2018 年 5 月的更新汇总或更新版本（Win2k16 的 KB4103720 和 Win2k12 R2 的 KB4098972），
+因为其中有一个性能修复。
+
+需要注意的是，这些配置 仅 影响 GC 的行为——因此，在 40 核机器上将 GCHeapCount 设置为 10 和将进程限制在一个只能使用 10 个 CPU 的作业对象中运行的区别在于，
+前者仍然允许用户线程使用所有 40 个 CPU，而后者会将进程中的所有线程限制为只能使用 10 个 CPU。

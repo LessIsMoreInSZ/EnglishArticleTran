@@ -108,3 +108,115 @@ Looking forward to seeing the analysis that folks write on memory analysis for .
 Edited on 03/01/2020 to add the indices to GC ETW Event blog entries
 
 https://devblogs.microsoft.com/dotnet/556-2/
+
+去年年底，我提到我们想提供一个 API，让你能够真正调查与 GC（垃圾回收）/托管内存相关的性能问题，这个 API 叫做 GLAD。
+现在，它的源代码终于在 GitHub 上开源了。GLAD 已经可用。仓库名为 PerfView，但你实际上只需要 TraceEvent 项目（
+不过直接构建整个解决方案然后引用生成的 Microsoft.Diagnostics.Tracing.TraceEvent.dll 会更容易）。
+下面是一个非常简单的示例，展示了如何获取每个进程（具有 GC 暂停的进程）的总 GC 暂停时间，并打印出这些信息以及进程名称和 PID。
+
+csharp
+复制
+using System;
+using System.Diagnostics.Tracing;
+using Microsoft.Diagnostics.Tracing.Session;
+using Microsoft.Diagnostics.Tracing.Parsers;
+using Microsoft.Diagnostics.Tracing.Analysis;
+using Microsoft.Diagnostics.Tracing.Analysis.JIT;
+using Microsoft.Diagnostics.Tracing.Analysis.GC;
+using Microsoft.Diagnostics.Tracing.Parsers.Clr;
+using System.Collections.Generic;
+
+namespace GCInfoProcessing
+{
+    class Program
+    {
+        // 给定一个 .etl 文件，打印出 GC 统计信息。
+        static void DecodeEtl(string strName)
+        {
+            using (var source = new Microsoft.Diagnostics.Tracing.ETWTraceEventSource(strName))
+            {
+                Console.WriteLine("{0}", strName);
+                source.NeedLoadedDotNetRuntimes();
+
+                source.Process();
+                List<TraceGC> GCs = null;
+
+                foreach (var proc in source.Processes())
+                {
+                    var mang = proc.LoadedDotNetRuntime();
+                    if (mang == null) continue;
+
+                    int total_gcs = 0;
+                    double total_pause_ms = 0;
+
+                    // 这是包含处理后的 GC 信息的列表
+                    GCs = mang.GC.GCs;
+                    for (int i = 0; i < GCs.Count; i++) 
+                    { 
+                        TraceGC gc = GCs[i]; 
+                        total_gcs++; 
+                        total_pause_ms += gc.PauseDurationMSec; 
+                    } 
+                    if (total_gcs > 0)
+                         Console.WriteLine("process {0} ({1}): total {2} GCs, pause {3:n3}ms", 
+                                           proc.Name, proc.ProcessID, total_gcs, total_pause_ms);
+                }
+            }
+        }
+
+        static void Main(string[] args)
+        {
+            DecodeEtl(args[0]);
+        }
+    }
+}
+我会简要描述 GLAD 的工作原理，但由于代码已经公开，构建并逐步调试代码以了解其工作原理应该相当容易。
+
+TraceEvent\Computers\TraceManagedProcess.cs 处理 GC ETW 事件并生成 TraceGC 类中可用的信息（我编辑了注释以避免 HTML 问题）：
+
+csharp
+复制
+public class TraceGC
+{
+    // 主要的 GC 信息
+    // 在 GCStart 中设置（从 1 开始，进程内唯一）
+    public int Number;
+    // GC 的类型，例如 NonConcurrent、Background 或 Foreground
+    // 在 GCStart 中设置
+    public GCType Type;
+    /// GC 的原因，例如小堆耗尽等。
+    // 在 GCStart 中设置
+    public GCReason Reason;
+    /// 收集的堆的代。如果你比较 GC 开始和停止事件中的 Generation，它们可能不同。
+    // 在 GCStop 中设置（0、1 或 2 代）
+    public int Generation;
+    /// 相对于跟踪开始的时间。用于排序
+    // 在 Start 中设置，不包括暂停时间。
+    public double StartRelativeMSec;
+    /// GC 的持续时间，不包括暂停时间
+    // 在 Stop 中设置。这只是 GC 时间（不包括暂停时间），即 Stop-Start。
+    public double DurationMSec;
+    /// EE 暂停进程的持续时间
+    // EE 暂停的总时间（对于后台 GC，可能小于 GC 时间）
+    public double PauseDurationMSec;
+    //......
+}
+你会看到一些带有以下注释的字段：
+
+csharp
+复制
+[Obsolete("This is experimental, you should not use it yet for non-experimental purposes.")]
+它并没有过时——只是实验性的。我们希望以用户友好的方式组织 TraceGC 中的信息（欢迎你建议或贡献！），并且我们希望听取你的意见来完善 API 的设计。我们是直接暴露这些信息，还是希望有一个更高级的类来表示不常用的信息？听听大家的意见会很好。你可以在这里或 GitHub 仓库中留下评论。
+这部分处理逻辑在这个文件的开头完成。例如：
+
+csharp
+复制
+source.Clr.GCStart += delegate (GCStartTraceData data)
+{
+    // ....
+};
+如果你想查看 TraceGC 的使用示例，可以在 PerfView\GcStats.cs 中找到很多这样的示例——这是 PerfView 中生成 GCStats 视图的部分。
+
+期待看到大家为 .NET 编写的内存分析工具 🙂
+
+编辑于 2020 年 3 月 1 日：添加了 GC ETW 事件博客条目的索引。

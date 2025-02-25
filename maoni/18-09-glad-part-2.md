@@ -90,3 +90,87 @@ There are many interesting cases for diagnostics and we’d love to get your hel
 or found a problem and made a fix it would be greatly appreciated if you share with the rest of us!
 
 https://devblogs.microsoft.com/dotnet/glad-part-2/
+
+两年前，我写了一篇博客介绍 GLAD（GC Latency Analysis and Diagnostics） 库。这个库可以提供比性能计数器更深入的垃圾回收堆性能洞察，
+并且会负责解析原始的 GC ETW 事件，因此用户无需自己完成这项工作。从那以后，我没有听到太多来自客户的使用反馈 😛 所以要么是很少有人在使用它，
+要么是人们在使用它并且没有遇到问题，所以我没有收到他们的反馈（私下里我希望是后者……）。
+
+无论如何，我想通过另一个示例来展示如何使用 GLAD 实时获取 GC 信息——希望这能鼓励那些对 GC 性能感兴趣但尚未利用 GLAD 的人重新审视它，并将其纳入他们的诊断流程中。
+你只需要引用 TraceEvent DLL（即 Microsoft.Diagnostics.Tracing.TraceEvent.dll；我发现你还必须在同一目录下包含 Microsoft.Diagnostics.FastSerialization.dll）。
+
+如果你已经使用过 TraceEvent，你可能已经看过 PerfView 仓库中的 TraceEvent Programmer's Guide 文档。大多数人知道你可以使用 TraceEvent 
+在收集到 ETW 跟踪后对其进行解码；但它也可以进行实时处理（这实际上是 ETW 的一个特性——你可以使用普通的 Win32 ETW API 对 ETW 事件进行实时或事后处理）。
+文档在“实时事件处理”部分专门讨论了这一点。但我们为你做了进一步简化，因此你不必关心单个 GC 完成处理的时间以获取处理后的信息——你可以在 TraceLoadedDotNetRuntime.GCEnd 
+回调中直接使用已处理的信息。下面是一个方法，它接受一个进程 ID 并在每次发生 GC 时打印出 GC 的开始和结束时间以及暂停时间（
+显然，暂停时间只能在 GC 结束时获得——此时完整的 GC 事件序列已完成，暂停时间信息已被计算并可用）：
+
+csharp
+深色版本
+public static void RealTimeProcessing(int pid)
+{
+    Console.WriteLine("Monitoring process {0}", pid);
+
+    using (var session = new TraceEventSession("My Session"))
+    {
+        var source = session.Source;
+        source.NeedLoadedDotNetRuntimes();
+        source.AddCallbackOnProcessStart(delegate (TraceProcess proc)
+        {
+            proc.AddCallbackOnDotNetRuntimeLoad(delegate (TraceLoadedDotNetRuntime runtime)
+            {
+                runtime.GCStart += delegate (TraceProcess p, TraceGC gc)
+                {
+                    if (p.ProcessID == pid)
+                    {
+                        Console.WriteLine("proc {0}: GC#{1} start at {2:0.00}ms", p.ProcessID, gc.Number, gc.PauseStartRelativeMSec);
+                    }
+                };
+                runtime.GCEnd += delegate (TraceProcess p, TraceGC gc)
+                {
+                    if (p.ProcessID == pid)
+                    {
+                        Console.WriteLine("proc {0}: GC#{1} end, paused for {2:0.00}ms)",
+                            p.ProcessID, gc.Number, gc.PauseDurationMSec);
+                    }
+                };
+            });
+        });
+
+        session.EnableProvider(ClrTraceEventParser.ProviderGuid);
+
+        source.Process();
+
+        foreach (var proc in source.Processes())
+        {
+            Console.WriteLine("{0}", proc.ToString());
+        }
+    }
+}
+（我刚刚注意到 p.Name 似乎不起作用，所以我改用了进程 ID。）
+
+下面是示例输出——我运行了一个不断触发 GC 的测试程序，并运行了这个工具。它会在每个 GC 开始和结束时打印相关信息：
+
+深色版本
+E:\tests\RealtimeMon\realmon\realmon\realmon\bin\Release>realmon 11112
+Monitoring process 11112
+proc 11112: GC#30 start at 330.29ms
+proc 11112: GC#30 end, paused for 213.52ms)
+proc 11112: GC#31 start at 1014.82ms
+proc 11112: GC#31 end, paused for 22.70ms)
+proc 11112: GC#32 start at 1453.19ms
+proc 11112: GC#32 end, paused for 29.50ms)
+proc 11112: GC#33 start at 1826.29ms
+proc 11112: GC#33 end, paused for 30.10ms)
+proc 11112: GC#34 start at 2182.78ms
+proc 11112: GC#34 end, paused for 34.25ms)
+proc 11112: GC#35 start at 2522.57ms
+proc 11112: GC#35 end, paused for 30.29ms)
+proc 11112: GC#36 start at 3290.49ms
+proc 11112: GC#36 end, paused for 120.48ms)
+proc 11112: GC#37 start at 4285.94ms
+proc 11112: GC#37 end, paused for 41.22ms)
+proc 11112: GC#38 start at 4617.87ms
+proc 11112: GC#38 end, paused for 17.90ms)
+proc 11112: GC#39 start at 4938.86ms
+^C
+有许多有趣的诊断案例，我们非常希望能得到你的帮助来建立一个案例库。例如，如果你用它构建了一个酷炫的 GC 性能诊断工具，或者发现了某个问题并进行了修复，请务必与我们分享！

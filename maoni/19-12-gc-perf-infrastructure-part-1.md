@@ -115,3 +115,93 @@ This trace was taken with the latest version of the desktop CLR. In the current 
 There’s an example.md that shows examples of using some of the commands. Note that the join analysis is not checked in just yet – the PR is out and I wanted to spend more time on the CR before merging it.
 
 https://devblogs.microsoft.com/dotnet/gc-perf-infrastructure-part-1/
+
+我们开源了新的 GC 性能基础设施！它现在已经成为 dotnet performance 仓库的一部分。我一直想写一篇关于它的文章，因为在上次我发布博客后，一些好奇的人问我什么时候可以使用它，但我一直没时间写，直到现在。
+
+首先，我想指出这个基础设施的目标受众，除了显而易见的（即那些需要对 GC 进行性能改进的人），还包括那些需要深入分析 GC/托管内存性能和/或围绕其构建自动化的人员。因此，它假设你已经具备相当多的分析知识。
+
+其次，这个基础设施有很多组成部分，并且由于它仍在开发中，所以如果你在使用时遇到问题，请不要感到惊讶。请耐心等待我们解决这些问题！我们的资源有限，可能无法立即处理所有问题。当然，如果你愿意贡献代码，我们将非常感激。我知道许多正在阅读这篇文章的人都对性能分析充满热情，并为 .NET 的性能分析做了大量工作，无论是通过自己的工具还是其他人的工具。如果你正在寻找一个切入点来学习 GC 调优，那么为性能分析做出贡献是一个极好的方式。因此，我强烈鼓励你参与贡献！
+
+架构
+我们讨论过是否要在单独的仓库中开源这个基础设施，但由于后勤原因，最终决定将其作为性能仓库的一部分，位于 src/benchmarks/gc 目录下（我将称其为根目录）。它不依赖于该目录之外的任何内容，这意味着如果你只想使用 GC 性能基础设施部分，不需要构建其他内容。
+
+根目录中的 readme.md 描述了通用的工作流程和基本用法。更多文档可以在 docs 目录中找到。
+
+这个基础设施主要有两个组成部分：
+
+1. 运行性能基准测试
+这部分运行我们自己的性能基准测试——这是为那些需要实际对 GC 进行性能改进的人准备的。它提供了以下功能：
+
+指定不同的命令行参数以生成不同的性能特征，例如 SOH/LOH 的不同存活率和不同的固定比例。
+指定要比较的构建版本。
+指定不同的环境，例如通过环境变量指定 GC 配置、在容器中运行或高内存负载情况下运行。
+指定不同的选项以收集跟踪数据，例如 GCCollectOnly 或 ThreadTime。
+你可以在我们称为“bench 文件”（这是一个 .yaml 文件，但实际上可以是任何格式——我们只是选择了 .yaml）中指定所有这些内容。我们还为基本的性能场景提供了配置，因此当你进行更改时，应该运行这些配置以确保性能不会退化。
+
+你不必运行我们的测试——只要你能将其指定为命令行程序，你可以运行任何你喜欢的内容，并仍然利用我们提供的其他功能，例如在容器中运行。
+
+这部分的源代码位于 exec 目录中。
+
+2. 分析性能
+这部分可以独立于运行部分使用。如果你已经收集了性能跟踪数据，你可以使用它来分析这些数据。我认为更多的人会对分析部分感兴趣，所以我将投入更多内容来讨论分析。在上一篇关于 GC 性能基础设施的文章中，我已经谈到了如何使用 Jupyter Notebook（在未来的博客文章中，我会展示更多带有实际代码的例子）。这次我将重点介绍如何设置和使用我们提供的命令。既然它已经开源，欢迎尝试。
+
+这部分的源代码位于 analysis 目录中。
+
+分析设置
+克隆 dotnet performance 仓库后，你会在 GC 基础设施的根目录中看到 readme 文件。设置细节在该文档中有详细说明。如果你只需要分析部分，不需要完成所有的设置步骤。你需要的唯一步骤是：
+
+安装 Python。最低要求版本是 3.7，推荐版本也是 3.7。Python 3.8 在 Jupyter Notebook 中存在问题。我想指出这一点，因为 Python 3.8 是 Python 官方页面上的最新发布版本。
+安装所需的 Python 库——可以通过 py -m pip install -r src/requirements.txt 安装，如果没有任何错误发生，那就很好；但你可能会在安装 pythonnet 时遇到问题，这是分析所必需的。事实上，安装 pythonnet 可能非常麻烦，所以我们专门为它编写了一个文档。我希望有一天有足够的优秀的 C# 图表库，并且 C# 能够在 VSCode 中的 Jupyter Notebook 中运行，这样我们就不再需要 pythonnet。
+在 src\analysis\managed-lib 目录中运行 dotnet publish 来构建 C# 分析库。
+指定要分析的内容
+假设你已经收集了一个 ETW 跟踪文件（这可以来自 .NET 或 .NET Core），并且想要分析它，你需要告诉基础设施你感兴趣的进程是什么（在 Linux 上，你可以使用 dotnet-trace 收集目标进程的事件，但由于基础设施同时适用于 Windows 和 Linux，这是一样的步骤）。指定要分析的进程只需编写一个 .yaml 文件，我们称之为“测试状态文件”。根据 readme 的说明，仅用于分析的测试状态文件只需要以下三行：
+
+yaml
+深色版本
+success: true
+
+trace_file_name: x.etl # 相对路径。通常应与该文件名匹配。
+
+process_id: 1234 # 如果你不知道这个值，可以使用 print-processes 命令列出进程。
+你可能会疑惑为什么需要指定 success: true 这一行——这是因为基础设施还可以用于分析运行测试的结果，当你运行大量测试并自动化分析它们的结果时，我们会查找这一行，并只分析成功的测试。
+
+你可能已经通过其他工具（如 PerfView）知道了要分析的进程的 PID，但我们希望基础设施能够独立使用，而不必运行其他工具，因此有一个命令可以列出跟踪文件中包含的进程的 PID。
+
+我们真的很希望基础设施提供有意义的内置帮助，因此当你想知道如何做某事时，通常可以在其帮助中找到答案。要获取所有命令的列表，只需在根目录中请求顶级帮助：
+
+bash
+深色版本
+C:\perf\src\benchmarks\gc>py . help
+正如顶级帮助所说，你可以获取特定命令的帮助。因此，我们将按照建议执行以下操作：
+
+bash
+深色版本
+C:\perf\src\benchmarks\gc>py . help print-processes
+输出示例：
+
+plaintext
+深色版本
+从跟踪文件中打印所有进程的 PID 和名称。
+
+参数名称 参数类型 描述
+--name-regex 任意字符串 用于按名称过滤进程的正则表达式
+--hide-threads true 或 false 不显示每个进程的线程
+作为一个例子，我故意选择了一个不适合使用 Server GC 的测试，因为它只有一个线程，所以我预计会看到堆不平衡的情况。我知道这种不平衡会在我们标记旧代对象引用年轻代对象时发生，因此我将使用 chart-individual-gcs 命令来显示每个堆标记这些对象所需的时间。
+
+bash
+深色版本
+C:\perf\src\benchmarks\gc>py . chart-individual-gcs C:\traces\fragment\fragment.yaml --x-single-gc-metric Index --y-single-heap-metrics MarkOlderMSec
+这将显示 8 个堆。考虑传递 --show-n-heaps。
+
+markold-time
+
+果然，其中一个堆总是花费显著更长的时间来标记年轻代对象被旧代对象引用的情况。为了确保这不是由于其他因素，我还查看了每个堆的提升量：
+
+bash
+深色版本
+C:\perf\src\benchmarks\gc>py . chart-individual-gcs C:\traces\fragment\fragment.yaml --x-single-gc-metric Index --y-single-heap-metrics MarkOlderPromotedMB
+这确认了我的理论——因为我们用一个堆标记了显著更多的对象，导致该堆在标记过程中花费了显著更长的时间。
+
+这个跟踪文件是使用最新版本的桌面 CLR 获取的。在当前版本的 CoreCLR 中，我们能够更好地处理这种情况，但今天我想专注于工具，所以我会留到另一天再讨论。
+
+有一个 example.md 文件展示了使用一些命令的示例。注意，联合分析尚未提交——PR 已经发出，我想花更多时间在代码审查上，然后再合并它。

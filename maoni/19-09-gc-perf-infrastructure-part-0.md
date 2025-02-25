@@ -81,3 +81,65 @@ This is enough evidence to tell us that the GC threads are getting severely inte
 
  
 https://devblogs.microsoft.com/dotnet/gc-perf-infrastructure-part-0/
+
+在这篇博客以及未来的几篇中，我将展示我们新的 GC 性能基础设施所提供的功能。我和 Andy 一直在为此工作（他完成了所有的工作，我只是担任顾问的角色）。我们很快会将其开源，我想通过一些例子向你们展示如何使用它，这样当它可用时，你可以将其加入到你的性能分析工具集中。
+
+通常情况下，在客户场景下的 GC 性能分析流程如下：
+
+获取性能跟踪数据（在 Windows 上是 ETW 跟踪，在 Linux 上是事件跟踪）；
+2A) 如果客户没有抱怨，只是想看看是否可以改进某些方面，我们会先对整体情况有一个大致的了解，并查看是否有改进的空间或如何改进；
+
+2B) 如果客户确实有具体的抱怨（例如，GC 暂停时间过长或内存使用过多），我们会寻找可能导致这些问题的原因。
+
+当然，任何有经验的性能分析人员都知道，性能分析可能因案例而异。你需要查看一些数据以获取线索，识别可疑区域，并专注于这些区域获取更多信息……通常需要逐步进展才能找到根本原因。
+
+为了提供一些背景信息，从跟踪数据中获取的数据由一个名为 TraceEvent 的库解析为 TraceGC 对象。由于 GC 是按进程进行的，每个进程（至少观察到一次 GC 的进程）都会有自己的 TraceGC 对象列表。TraceGC 类型包含有关此次 GC 的信息，例如：
+
+基本信息，直接从某些 GC 事件字段读取，如编号（此 GC 的索引）、代数（此次 GC 收集的代数）、PerHeapHistories（包括堆的判罪原因、每一代的数据等）。
+处理后的信息，如 PauseDurationMSec（对于临时代 GC，这是 SuspendEEStart 事件和 RestartEEStop 事件之间的时间差）。
+当存在额外事件时才会提供的信息，例如如果有 CPU 样本收集，则会有 GCCpuMSec。
+因此，即使是一个基本的 GC 跟踪数据，也可以获取大量信息。我们在 TraceEvent 中进行了一些处理，性能分析意味着以任意方式查看这些 TraceGC 对象提供的信息。
+
+如果跟踪数据很大，解析跟踪数据以获取这些 TraceGC 对象所需的时间可能会非常长。而且如果我更改了我的分析代码，我就必须重新开始分析过程，这意味着我必须再次解析跟踪数据。这似乎非常低效。我开始寻找可以持久化 TraceGC 对象的选项，这样我可以修改我的代码来消费它们，而无需重新处理跟踪数据。我发现了 Jupyter Notebook，它允许你在单独的单元格中编辑 Python 代码，但其结果会保留在内存中，并可被其他单元格使用。我还发现了 pythonnet，它允许你从 Python 中与 C# 库互操作。这意味着我可以将 TraceGC 对象保留在内存中，并随时修改代码以查看这些对象的任何信息，而无需重新处理跟踪数据。再加上 Python 提供的良好绘图功能，这正是我所需要的。因此，我会创建一个单元格专门用于跟踪处理并生成所有的 TraceGC 对象，而其他单元格则用于以各种方式查看这些对象中的信息，并随时进行修改。
+
+几年前我就开始使用这种方法，并一直沿用至今。当 Andy 加入团队并开始开发新的 GC 性能基础设施时，我请他将这种方法纳入我们的基础设施中。今天，我和他一起查看了一个跟踪数据，以下是我们的操作。
+
+在这个案例中，我从客户那里获取了跟踪数据，看看是否可以通过客户可以采取的措施或我们已经实现但客户尚未升级的功能，或者我们正在做或计划做的事情来改进性能。首先，我们查看了三个指标——单个 GC 暂停时间（PauseDurationMSec）、GC 速度（PromotedMBPerSec，即 GC 提升的 MB 数 / （PauseDurationMSec / 1000））和每次 GC 后的堆大小（以 MB 为单位，HeapSizeAfterMB），只是为了获得一个总体概念。我们使用直方图图表来展示这些数据：
+
+
+*NGC 表示非并发 GC，我不想称之为 BGC（阻塞 GC），因为我们已经将 BGC 定义为后台 GC。
+
+如果你查看 gen0 GC（NGC0）、gen1 GC（NGC1）和后台 GC（BGC）的 PauseDurationMSec 图表（此跟踪数据中没有完全阻塞的 GC），大多数都在几毫秒到 20 毫秒的范围内。但确实有一些较长的暂停时间，例如 NGC0 图表中的一些在 75 到 100 毫秒之间的暂停。并且我们可以立即看到 BGC 中的一些异常值——大多数都小于 40 毫秒，但有些大于 100 毫秒！虽然在图表上很难看到，但在 NGC0 和 NGC1 图表中 > 100 毫秒的范围内实际上有一些细蓝线。
+
+由于我们使用的是 Jupyter，我们只需更改该单元格中的代码，仅显示 PauseDurationMSec > 50 毫秒的 GC 并重新绘制图表——现在可以清楚地看到一些超过 100 毫秒的临时代 GC 暂停，我们可以看到 1 次长的 BGC 暂停时间为 114.2 毫秒。
+
+我们还可以看到许多这些 GC 的速度（PromotedMBPerSec 图表）很低。在 NGC0 图表中，大多数 GC 都在左侧，具有最低的速度。
+
+如果长时间 GC 的 PromotedMBPerSec 不那么低，那就意味着它们只是需要提升更多的内存，这表明存在 GC 调优问题——一个非常可能的原因是我们没有正确设置分配预算。
+
+但由于情况并非如此，我们想知道为什么这些 GC 的速度如此低——我们暂停了很长时间，但 GC 并没有以正常速度完成工作。
+
+让我们先从 gen0 GC（NGC0）开始作为切入点。我们知道 PauseDurationMSec 的计算方式，因此它包括暂停 EE（SuspendDurationMSec）+ 实际 GC 工作 + 恢复 EE。恢复 EE 通常花费很少时间，所以我先不看这部分。我想看看暂停时间是否过长。因此，我们使用表格打印函数查看 NGC0 的暂停时间和暂停持续时间。既然这么容易，我们还添加了总提升的 MB 和 GC 速度，并按 PauseDurationMSec 排序（从高到低）：
+
+
+“pause msec” 是 PauseDurationMSec。
+
+“suspend msec” 是 SuspendDurationMSec。
+
+“promoted mb” 是此次 GC 的 PromotedMB。
+
+（为简洁起见，这里只显示前几行）
+
+我们立即看到了一些较长的暂停时间——耗时 156 毫秒和 101 毫秒的 GC 分别花费了 95.4 毫秒和 49.4 毫秒用于暂停。这显然表明存在暂停问题，意味着 EE 在暂停托管线程时遇到了困难。但对于其他 GC，例如最长的那个耗时 187 毫秒的 GC，暂停时间非常短。
+
+TraceGC 类中还有一个名为 DurationMSec 的字段，它是 GCStart 事件和 GCStop 事件之间的时间差。乍一看，这应该只是 PauseDurationMSec - 暂停 EE - 恢复 EE。几乎如此——但我们还需要在 SuspendEEStop 和 GCStart 之间，以及 GCStop 和 RestartEEStart 之间做一些工作。因此，如果一切按预期运行，PauseDurationMSec - DurationMSec 应该几乎等于（暂停 EE + 恢复 EE）。我们再次修改代码，添加了一个 DurationMSec 列（“duration msec”），并按该列排序：
+
+
+最长的 GC（187 毫秒）只有 8.73 毫秒的 DurationMSec！而暂停时间仅为 0.0544 毫秒。因此，PauseDurationMSec 和 DurationMSec 之间的差异巨大，且无法用暂停成本解释。
+
+我们再次修改代码，添加了几列，主要是“pause to start”列，它是 SuspendEEStart 和 GCStart 时间戳之间的差值，因此包括了暂停时间。我们还计算了一个“pause %”列（"suspend msec" / "pause to start" * 100）和一个“suspend %”列（"suspend msec" / "pause msec" * 100）。此外，我们将“promoted mb/sec”列改为使用 DurationMSec 而不是 PauseDurationMSec。现在表格中的某些行发生了显著变化。表格按“pause %”列排序。
+
+
+耗时 187 毫秒的 GC 从 SuspendEEStart 到 GCStart 花费了 178 毫秒！！当然，GC 速度（promoted mb/sec）现在要高得多。
+
+这足以证明 GC 线程受到了严重干扰（暂停并不是唯一受影响的部分），可能是来自其他进程或其他线程的干扰。我们需要收集更多事件以进一步诊断。
